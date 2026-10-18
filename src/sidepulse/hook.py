@@ -8,10 +8,18 @@ from pathlib import Path
 from typing import Any
 
 from .audit import append_status_audit_record, rotate_log_if_large
-from .collector import StatusMetadata, project_dir_from_event, status_from_event, title_from_event
+from .collector import (
+    StatusMetadata,
+    _tool_response_looks_failed,
+    project_dir_from_event,
+    status_from_event,
+    title_from_event,
+)
 from .text_utils import read_recent_lines
 from .origin import annotate_payload_with_origin
 from .providers import detect_log_path, infer_provider_from_payload, parse_log_line
+
+TOOL_RESPONSE_STATUS_KEYS = ("interrupted", "success", "exit_code")
 
 
 def format_hook_payload(
@@ -46,8 +54,37 @@ def write_hook_line(log_path: Path, line: dict[str, Any]) -> None:
     log_path = log_path.expanduser()
     log_path.parent.mkdir(parents=True, exist_ok=True)
     rotate_log_if_large(log_path)
+    logged = without_tool_bodies(line)
+    if isinstance(logged.get("event"), dict):
+        logged["event"] = without_tool_bodies(logged["event"])
     with log_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(line, separators=(",", ":"), ensure_ascii=False) + "\n")
+        handle.write(json.dumps(logged, separators=(",", ":"), ensure_ascii=False) + "\n")
+
+
+def without_tool_bodies(payload: dict[str, Any]) -> dict[str, Any]:
+    """Drop tool input/output bodies, keeping the fields the collector reads back.
+
+    The collector pairs a permission request with its PostToolUse by the tool
+    input's ``command`` and detects failures from the tool response's status
+    fields. Everything else, such as file contents and command output, can be
+    megabytes per event.
+    """
+    compact = dict(payload)
+    for key in ("tool_input", "toolInput"):
+        if key in compact:
+            value = compact.pop(key)
+            if isinstance(value, dict) and isinstance(value.get("command"), str):
+                compact[key] = {"command": value["command"]}
+    for key in ("tool_response", "toolResponse"):
+        if key in compact:
+            value = compact.pop(key)
+            if isinstance(value, dict):
+                status = {name: value[name] for name in TOOL_RESPONSE_STATUS_KEYS if name in value}
+                if status:
+                    compact[key] = status
+            elif _tool_response_looks_failed(value):
+                compact[key] = {"success": False}
+    return compact
 
 
 def write_hook_payload(provider: str, log_path: Path, payload_text: str) -> None:
