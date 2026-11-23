@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .audit import append_status_audit_record
+from .audit import append_status_audit_record, rotate_log_if_large
 from .collector import StatusMetadata, project_dir_from_event, status_from_event, title_from_event
 from .text_utils import read_recent_lines
 from .origin import annotate_payload_with_origin
@@ -45,6 +45,7 @@ def format_hook_payload(
 def write_hook_line(log_path: Path, line: dict[str, Any]) -> None:
     log_path = log_path.expanduser()
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    rotate_log_if_large(log_path)
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(line, separators=(",", ":"), ensure_ascii=False) + "\n")
 
