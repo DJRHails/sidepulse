@@ -1,5 +1,23 @@
 # sidepulse
 
+> **Fork note — patch-stack workflow:**
+> This is a patch-stack fork of [inteliwear/sidepulse](https://github.com/inteliwear/sidepulse), managed by [DJRHails/patch-stack-action](https://github.com/DJRHails/patch-stack-action).
+>
+> **How it works:**
+> - The `base` branch mirrors upstream `main` nightly.
+> - Each `patch/*` branch holds a single logical change rebased automatically onto `base`.
+> - The fork's `main` integrates all patches via squash-merge (commits prefixed `patch-stack:`).
+> - Merge conflicts during rebase are resolved automatically using Claude Code.
+>
+> **Adding a new patch:**
+> 1. `git checkout -b patch/my-feature origin/base`
+> 2. Make changes and push: `git push origin patch/my-feature`
+> 3. Create a PR: `gh pr create --head patch/my-feature --base base`
+>
+> **Current patches:**
+> - `patch/rotate-agent-logs`: rotate the append-only agent logs past 50 MB.
+> - `patch/rotate-agent-logs--drop-tool-bodies`: drop tool input and output bodies from hook logs.
+
 `sidepulse` is the command-line and macOS companion project for
 [SidePulse](https://sidepulse.io).
 
