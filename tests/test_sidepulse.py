@@ -646,6 +646,80 @@ class AgentMonitorTests(unittest.TestCase):
                 self.assertGreater(log.stat().st_size, APPEND_LOG_MAX_BYTES)
                 self.assertFalse((Path(tmp) / "log.jsonl.1").exists())
 
+    def test_hook_log_drops_tool_bodies_but_keeps_status_fields(self) -> None:
+        body = "x" * 10_000
+        payloads = [
+            {
+                "hook_event_name": "PermissionRequest",
+                "session_id": "claude-session",
+                "tool_name": "Bash",
+                "tool_input": {"command": "rm -rf build", "description": body},
+            },
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "claude-session",
+                "tool_name": "Bash",
+                "tool_input": {"command": "rm -rf build", "description": body},
+                "tool_response": {"stdout": body, "stderr": "", "exit_code": 1},
+            },
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "claude-session",
+                "tool_name": "Read",
+                "tool_input": {"file_path": "/tmp/big.txt"},
+                "tool_response": f"Traceback (most recent call last): {body}",
+            },
+            {
+                "hook_event_name": "PostToolUse",
+                "session_id": "claude-session",
+                "tool_name": "Write",
+                "tool_input": {"file_path": "/tmp/big.txt", "content": body},
+                "tool_response": {"filePath": "/tmp/big.txt", "content": body},
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "claude.jsonl"
+            for payload in payloads:
+                write_hook_payload("claude", log, json.dumps(payload))
+
+            lines = [json.loads(line) for line in log.read_text().splitlines()]
+
+        self.assertTrue(all(len(json.dumps(line)) < 1000 for line in lines))
+        self.assertEqual([line["tool_name"] for line in lines], ["Bash", "Bash", "Read", "Write"])
+        self.assertEqual(lines[0]["tool_input"], {"command": "rm -rf build"})
+        self.assertEqual(lines[1]["tool_response"], {"exit_code": 1})
+        self.assertEqual(lines[2]["tool_response"], {"success": False})
+        self.assertNotIn("tool_input", lines[3])
+        self.assertNotIn("tool_response", lines[3])
+        for payload, line in zip(payloads, lines):
+            full = parse_log_line("claude", json.dumps(payload))
+            logged = parse_log_line("claude", json.dumps(line))
+            self.assertEqual(
+                collector_module.status_from_event(logged).mode,
+                collector_module.status_from_event(full).mode,
+            )
+            self.assertEqual(
+                collector_module.permission_signature(logged),
+                collector_module.permission_signature(full),
+            )
+
+    def test_codex_hook_log_drops_nested_tool_bodies(self) -> None:
+        payload = {
+            "hook_event_name": "PostToolUse",
+            "session_id": "codex-session",
+            "tool_name": "shell",
+            "tool_input": {"command": "make test", "stdin": "x" * 10_000},
+            "tool_response": "x" * 10_000,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "codex.jsonl"
+            write_hook_payload("codex", log, json.dumps(payload))
+            event = json.loads(log.read_text())["event"]
+
+        self.assertEqual(event["tool_name"], "shell")
+        self.assertEqual(event["tool_input"], {"command": "make test"})
+        self.assertNotIn("tool_response", event)
+
     @unittest.skipIf(os.name == 'nt', 'macOS/POSIX desktop launcher or UI socket')
     def test_ui_socket_only_handles_ui_commands(self) -> None:
         import socket
