@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import html
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -17,6 +18,7 @@ STATUS_AUDIT_LOG_NAME = "event-status.jsonl"
 STATUS_HISTORY_LOG_NAME = "status-history.jsonl"
 RAW_PREVIEW_LIMIT = 2000
 MESSAGE_PREVIEW_LIMIT = 240
+APPEND_LOG_MAX_BYTES = 50 * 1024 * 1024
 AUDIT_COLUMNS = (
     "audited_at",
     "logged_at",
@@ -43,6 +45,19 @@ def default_status_history_log_path(home: Path | None = None) -> Path:
     return default_state_dir(home) / STATUS_HISTORY_LOG_NAME
 
 
+def rotate_log_if_large(path: Path) -> None:
+    """Move an append-only log to ``<name>.1`` once it passes the size cap.
+
+    Any previous ``.1`` is replaced, so at most one old generation is kept.
+    """
+    try:
+        if path.stat().st_size <= APPEND_LOG_MAX_BYTES:
+            return
+        os.replace(path, path.with_name(f"{path.name}.1"))
+    except FileNotFoundError:
+        return
+
+
 def append_status_audit_record(
     event: HookEvent,
     status: AgentStatus | None,
@@ -52,6 +67,7 @@ def append_status_audit_record(
     target = path or default_status_audit_log_path()
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
+        rotate_log_if_large(target)
         with target.open("a", encoding="utf-8") as handle:
             handle.write(
                 json.dumps(
@@ -72,6 +88,7 @@ def append_status_history_record(
 ) -> None:
     target = path or default_status_history_log_path()
     target.parent.mkdir(parents=True, exist_ok=True)
+    rotate_log_if_large(target)
     with target.open("a", encoding="utf-8") as handle:
         handle.write(
             json.dumps(

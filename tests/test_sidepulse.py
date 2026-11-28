@@ -24,6 +24,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from sidepulse.audit import (
+    APPEND_LOG_MAX_BYTES,
     append_status_audit_record,
     append_status_history_record,
     default_status_history_log_path,
@@ -58,7 +59,12 @@ from sidepulse.device_writer import (
     validate_led_text,
     write_led_program,
 )
-from sidepulse.hook import format_hook_payload, routed_hook_payload, write_hook_payload
+from sidepulse.hook import (
+    format_hook_payload,
+    routed_hook_payload,
+    write_hook_line,
+    write_hook_payload,
+)
 from sidepulse.ipc import UICommandServer, request_settings_window
 from sidepulse.install import (
     InstallResult,
@@ -594,6 +600,51 @@ class AgentMonitorTests(unittest.TestCase):
                     {"recorded_at": "2026-07-20T12:00:00Z"},
                     path=blocking_file / "status-history.jsonl",
                 )
+
+    def append_log_writers(self) -> dict[str, object]:
+        record = parse_log_line(
+            "claude",
+            json.dumps({"hook_event_name": "Stop", "session_id": "claude-session"}),
+        )
+        self.assertIsNotNone(record)
+        return {
+            "hook": lambda path: write_hook_line(path, {"hook_event_name": "Stop"}),
+            "status audit": lambda path: append_status_audit_record(record, None, path=path),
+            "status history": lambda path: append_status_history_record(
+                {"recorded_at": "2026-07-20T12:00:00Z"},
+                path=path,
+            ),
+        }
+
+    def test_append_logs_rotate_past_size_cap_replacing_previous_generation(self) -> None:
+        for name, write in self.append_log_writers().items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                log = Path(tmp) / "log.jsonl"
+                previous = Path(tmp) / "log.jsonl.1"
+                previous.write_text("older generation\n", encoding="utf-8")
+                with log.open("wb") as handle:
+                    handle.truncate(APPEND_LOG_MAX_BYTES + 1)
+
+                write(log)
+
+                self.assertEqual(previous.stat().st_size, APPEND_LOG_MAX_BYTES + 1)
+                self.assertEqual(len(log.read_text(encoding="utf-8").splitlines()), 1)
+                self.assertEqual(
+                    sorted(path.name for path in Path(tmp).iterdir()),
+                    ["log.jsonl", "log.jsonl.1"],
+                )
+
+    def test_append_logs_at_size_cap_are_not_rotated(self) -> None:
+        for name, write in self.append_log_writers().items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                log = Path(tmp) / "log.jsonl"
+                with log.open("wb") as handle:
+                    handle.truncate(APPEND_LOG_MAX_BYTES)
+
+                write(log)
+
+                self.assertGreater(log.stat().st_size, APPEND_LOG_MAX_BYTES)
+                self.assertFalse((Path(tmp) / "log.jsonl.1").exists())
 
     @unittest.skipIf(os.name == 'nt', 'macOS/POSIX desktop launcher or UI socket')
     def test_ui_socket_only_handles_ui_commands(self) -> None:
